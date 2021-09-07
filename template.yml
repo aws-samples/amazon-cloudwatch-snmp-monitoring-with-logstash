@@ -1,0 +1,472 @@
+#  Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+#  SPDX-License-Identifier: MIT-0
+#
+#  Permission is hereby granted, free of charge, to any person obtaining a copy of this
+#  software and associated documentation files (the "Software"), to deal in the Software
+#  without restriction, including without limitation the rights to use, copy, modify,
+#  merge, publish, distribute, sublicense, and/or sell copies of the Software, and to
+#  permit persons to whom the Software is furnished to do so.
+#
+#  THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED,
+#  INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
+#  PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT
+#  HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+#  OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
+#  SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+---
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Creates one Logstash server, two SNMP agents on EC2 instances and a Secret
+  in AWS Secrets Manager. **WARNING** This template creates Amazon EC2 instances,
+  Amazon CloudWatch custom metrics and related resources. You will be billed for the
+  AWS resources used if you create a stack from this template.
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      - Label:
+          default: Network configuration
+        Parameters:
+          - MyVPC
+          - MySubnet
+      - Label:
+          default: Amazon EC2 configuration
+        Parameters:
+          - LogstashInstanceType
+          - SNMPInstanceType
+          - LatestAmiId
+          - RepoLocation
+      - Label:
+          default: Troubleshooting and connectivity
+        Parameters:
+          - SSHLocation
+          - MyKeyPair
+    ParameterLabels:
+      MyVPC:
+        default: Deployment VPC
+      MySubnet:
+        default: Deployment subnet with internet access
+      LatestAmiId:
+        default: Amazon Linux 2 AMI ID
+      RepoLocation:
+        default: GitHub repository URL
+      MyKeyPair:
+        default: EC2 Key pair
+      LogstashInstanceType:
+        default: Instance type for Logstash
+      SNMPInstanceType:
+        default: Instance type for SNMP agents
+      SSHLocation:
+        default: SSH Location
+Parameters:
+  MyVPC:
+    Description: Select VPC with internet access
+    Type: AWS::EC2::VPC::Id
+  MySubnet:
+    Description: Select only one subnet with Internet access
+    Type: List<AWS::EC2::Subnet::Id>
+  LatestAmiId:
+    Description: Latest Amazon Linux 2 image from SSM Parameter Store
+    Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
+    Default: /aws/service/ami-amazon-linux-latest/amzn2-ami-hvm-x86_64-gp2
+  RepoLocation:
+    Description: Archive containing configuration and settings
+    Type: String
+    Default: https://github.com/ORGNAME/REPONAME/tarball/main
+  MyKeyPair:
+    Description: Amazon EC2 Key Pair
+    Type: AWS::EC2::KeyPair::KeyName
+    ConstraintDescription: must be the name of an existing EC2 KeyPair
+  LogstashInstanceType:
+    AllowedValues:
+      - t3.small
+      - t3.medium
+      - t3.large
+      - t3.xlarge
+      - t3.2xlarge
+    Default: t3.small
+    Description: Select instance size based to Logstash JVM size. Keep defaults for
+      demo.
+    Type: String
+  SNMPInstanceType:
+    AllowedValues:
+      - t3.nano
+      - t3.small
+      - t3.medium
+      - t3.large
+      - t3.xlarge
+      - t3.2xlarge
+    Default: t3.nano
+    Description: Amazon EC2 instance type for the SNMP simulator instances
+    Type: String
+  SSHLocation:
+    Description: The IP address range that can be used to SSH to the EC2 instances
+    Type: String
+    MinLength: '9'
+    MaxLength: '18'
+    Default: 84.255.0.0/16
+    AllowedPattern: (\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})/(\d{1,2})
+    ConstraintDescription: must be a valid IP CIDR range of the form x.x.x.x/x.
+Resources:
+  SNMPSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: SNMPSecret
+      Description: my SNMPv3 secret
+      GenerateSecretString:
+        SecretStringTemplate: '{"username": "readonlyuser"}'
+        GenerateStringKey: password
+        PasswordLength: 8
+        ExcludePunctuation: true
+      Tags:
+        - Key: AppName
+          Value: SNMPdemo
+  LogstashRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - ec2.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      Path: /
+      ManagedPolicyArns:
+        - !Sub "arn:${AWS::Partition}:iam::aws:policy/CloudWatchAgentServerPolicy"
+  SecretsManagerPolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: SecretsManagerPolicy
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Action:
+              - secretsmanager:GetSecretValue
+            Resource: !Sub '${SNMPSecret}'
+      Roles:
+        - !Ref 'LogstashRole'
+        - !Ref 'SNMPRole'
+  LogstashInstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Path: /
+      Roles:
+        - !Ref 'LogstashRole'
+  SNMPRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - ec2.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      Path: /
+  SNMPInstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Path: /
+      Roles:
+        - !Ref 'SNMPRole'
+  LogstashSG:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Enables SSH access
+      VpcId: !Ref 'MyVPC'
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: !Ref 'SSHLocation'
+          Description: SSH access locked down to user CIDR
+      SecurityGroupEgress:
+        - IpProtocol: '-1'
+          CidrIp: 0.0.0.0/0
+          Description: Allow all outbound traffic
+  SNMPSG:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Enables SNMP Poll via port 161 locked down to the Logstash
+        server + SSH access
+      VpcId: !Ref 'MyVPC'
+      SecurityGroupIngress:
+        - IpProtocol: udp
+          FromPort: 161
+          ToPort: 161
+          SourceSecurityGroupId: !GetAtt 'LogstashSG.GroupId'
+          Description: Allows SNMP poll from Logstash instance
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: !Ref 'SSHLocation'
+          Description: SSH access locked down to user CIDR
+      SecurityGroupEgress:
+        - IpProtocol: '-1'
+          CidrIp: 0.0.0.0/0
+          Description: Allow all outbound traffic
+  LogstashInstance:
+    Type: AWS::EC2::Instance
+    Metadata:
+      AWS::CloudFormation::Init:
+        configSets:
+          InstallAndRun:
+            - Prepare
+            - Install
+        Prepare:
+          commands:
+            01_import_logstash_yum:
+              command: rpm --import https://artifacts.elastic.co/GPG-KEY-elasticsearch
+          sources:
+            /tmp/repo: !Ref 'RepoLocation'
+          files:
+            /etc/yum.repos.d/logstash.repo:
+              content: "[logstash-7.x]\nname=Elastic repository for 7.x packages\n\
+                baseurl=https://artifacts.elastic.co/packages/7.x/yum\ngpgcheck=1\n\
+                gpgkey=https://artifacts.elastic.co/GPG-KEY-elasticsearch\nenabled=1\n\
+                autorefresh=1\ntype=rpm-md              \n"
+              mode: '000600'
+              owner: ec2-user
+              group: ec2-user
+        Install:
+          packages:
+            yum:
+              jq: []
+              git: []
+              logstash: []
+          files:
+            /etc/cfn/cfn-hup.conf:
+              content: !Sub |
+                [main]
+                stack=${AWS::StackId}
+                region=${AWS::Region}
+                interval=1
+              mode: '000400'
+              owner: root
+              group: root
+            /etc/cfn/hooks.d/cfn-auto-reloader.conf:
+              content: !Sub |
+                [cfn-auto-reloader-hook]
+                triggers=post.update
+                path=Resources.LogstashInstance.Metadata.AWS::CloudFormation::Init
+                action=../../opt/aws/bin/cfn-init --stack ${AWS::StackName} --resource LogstashInstance --region ${AWS::Region}
+                runas=root
+          commands:
+            01_copy_config:
+              command: cp *.conf /etc/logstash/conf.d/
+              cwd: /tmp/repo/conf/
+            02_copy_settings:
+              command: cp pipelines.yml jvm.options logstash.yml /etc/logstash/
+              cwd: /tmp/repo/settings/
+            03_create_logstash_keystore:
+              command: echo y | bin/logstash-keystore --path.settings /etc/logstash
+                create
+              cwd: /usr/share/logstash/
+            04_update_SNMP_targets:
+              command: !Sub 'sed -i -e ''s/111.111.111.111/${SNMPInstance1.PrivateIp}/g''
+                -e ''s/222.222.222.222/${SNMPInstance2.PrivateIp}/g'' snmp.conf'
+              cwd: /etc/logstash/conf.d/
+            05_update_aws_region:
+              command: !Sub 'sed -i ''s/REGION/${AWS::Region}/g'' cloudwatch.conf'
+              cwd: /etc/logstash/conf.d/
+            06_add_user_keystore:
+              command: !Sub 'aws secretsmanager get-secret-value  --region ${AWS::Region}
+                --secret-id SNMPSecret      --query SecretString        --output text
+                | jq .username | tr -d ''"''   |  bin/logstash-keystore --path.settings
+                /etc/logstash add SNMP_USER'
+              cwd: /usr/share/logstash/
+            07_add_pwd_keystore:
+              command: !Sub 'aws secretsmanager get-secret-value  --region ${AWS::Region}
+                --secret-id SNMPSecret      --query SecretString        --output text
+                | jq .password | tr -d ''"''   |  bin/logstash-keystore --path.settings
+                /etc/logstash add SNMP_PWD'
+              cwd: /usr/share/logstash/
+          services:
+            sysvinit:
+              logstash:
+                enabled: 'true'
+                ensureRunning: 'true'
+              cfn-hup:
+                enabled: 'true'
+                ensureRunning: 'true'
+                files:
+                  - /etc/cfn/cfn-hup.conf
+                  - /etc/cfn/hooks.d/cfn-auto-reloader.conf
+    DependsOn: SNMPSecret
+    Properties:
+      ImageId: !Ref 'LatestAmiId'
+      InstanceType: !Ref 'LogstashInstanceType'
+      KeyName: !Ref 'MyKeyPair'
+      IamInstanceProfile: !Ref 'LogstashInstanceProfile'
+      SubnetId: !Select
+        - 0
+        - !Ref 'MySubnet'
+      SecurityGroupIds:
+        - !GetAtt 'LogstashSG.GroupId'
+      Tags:
+        - Key: Name
+          Value: Logstash Server
+      UserData: !Base64
+        Fn::Sub: "#!/bin/bash -xe\nyum update -y aws-cfn-bootstrap\n/opt/aws/bin/cfn-init\
+          \ -v --stack ${AWS::StackName} --resource LogstashInstance --configsets\
+          \ InstallAndRun --region ${AWS::Region}\n/opt/aws/bin/cfn-signal -e $? --stack\
+          \ ${AWS::StackName} --resource LogstashInstance --region ${AWS::Region}\
+          \ \n"
+    CreationPolicy:
+      ResourceSignal:
+        Timeout: PT10M
+  SNMPInstance1:
+    Type: AWS::EC2::Instance
+    Metadata:
+      AWS::CloudFormation::Init:
+        configSets:
+          InstallAndRun:
+            - Install
+        Install:
+          packages:
+            yum:
+              net-snmp: []
+              net-snmp-utils: []
+              net-snmp-devel: []
+              jq: []
+          files:
+            /etc/cfn/cfn-hup.conf:
+              content: !Sub |
+                [main]
+                stack=${AWS::StackId}
+                region=${AWS::Region}
+                interval=1
+              mode: 256
+              owner: root
+              group: root
+            /etc/cfn/hooks.d/cfn-auto-reloader.conf:
+              content: !Sub |
+                [cfn-auto-reloader-hook]
+                triggers=post.update
+                path=Resources.SNMPInstance1.Metadata.AWS::CloudFormation::Init
+                action=../../opt/aws/bin/cfn-init --stack ${AWS::StackName} --resource SNMPInstance1 --region ${AWS::Region}
+                runas=root
+          commands:
+            01_create_SNMPv3_user:
+              command: !Sub 'SECRET=$(aws secretsmanager get-secret-value  --region
+                ${AWS::Region} --secret-id SNMPSecret      --query SecretString        --output
+                text) ;  SNMPUSER=$(echo $SECRET | jq .username | tr -d ''"''   )
+                ;SNMPPWD=$(echo $SECRET | jq .password | tr -d ''"''   ) ;net-snmp-config
+                --create-snmpv3-user -ro -a MD5 -A $SNMPPWD $SNMPUSER >/dev/null'
+          services:
+            sysvinit:
+              snmpd:
+                enabled: 'true'
+                ensureRunning: 'true'
+              cfn-hup:
+                enabled: 'true'
+                ensureRunning: 'true'
+                files:
+                  - /etc/cfn/cfn-hup.conf
+                  - /etc/cfn/hooks.d/cfn-auto-reloader.conf
+    DependsOn: SNMPSecret
+    Properties:
+      ImageId: !Ref 'LatestAmiId'
+      InstanceType: !Ref 'SNMPInstanceType'
+      KeyName: !Ref 'MyKeyPair'
+      IamInstanceProfile: !Ref 'SNMPInstanceProfile'
+      SubnetId: !Select
+        - 0
+        - !Ref 'MySubnet'
+      SecurityGroupIds:
+        - !GetAtt 'SNMPSG.GroupId'
+      Tags:
+        - Key: Name
+          Value: SNMP Agent 1
+      UserData: !Base64
+        Fn::Sub: |
+          #!/bin/bash -xe
+          yum update -y aws-cfn-bootstrap
+          /opt/aws/bin/cfn-init -v --stack ${AWS::StackName} --resource SNMPInstance1 --configsets InstallAndRun --region ${AWS::Region}
+          /opt/aws/bin/cfn-signal -e $? --stack ${AWS::StackName} --resource SNMPInstance1 --region ${AWS::Region}
+    CreationPolicy:
+      ResourceSignal:
+        Timeout: PT10M
+  SNMPInstance2:
+    Type: AWS::EC2::Instance
+    Metadata:
+      AWS::CloudFormation::Init:
+        configSets:
+          InstallAndRun:
+            - Install
+        Install:
+          packages:
+            yum:
+              net-snmp: []
+              net-snmp-utils: []
+              net-snmp-devel: []
+              jq: []
+          files:
+            /etc/cfn/cfn-hup.conf:
+              content: !Sub |
+                [main]
+                stack=${AWS::StackId}
+                region=${AWS::Region}
+                interval=1
+              mode: 256
+              owner: root
+              group: root
+            /etc/cfn/hooks.d/cfn-auto-reloader.conf:
+              content: !Sub |
+                [cfn-auto-reloader-hook]
+                triggers=post.update
+                path=Resources.SNMPInstance1.Metadata.AWS::CloudFormation::Init
+                action=../../opt/aws/bin/cfn-init --stack ${AWS::StackName} --resource SNMPInstance1 --region ${AWS::Region}
+                runas=root
+          commands:
+            01_create_SNMPv3_user:
+              command: !Sub 'SECRET=$(aws secretsmanager get-secret-value  --region
+                ${AWS::Region} --secret-id SNMPSecret      --query SecretString        --output
+                text) ;  SNMPUSER=$(echo $SECRET | jq .username | tr -d ''"''   )
+                ;SNMPPWD=$(echo $SECRET | jq .password | tr -d ''"''   ) ;net-snmp-config
+                --create-snmpv3-user -ro -a MD5 -A $SNMPPWD $SNMPUSER >/dev/null'
+          services:
+            sysvinit:
+              snmpd:
+                enabled: 'true'
+                ensureRunning: 'true'
+              cfn-hup:
+                enabled: 'true'
+                ensureRunning: 'true'
+                files:
+                  - /etc/cfn/cfn-hup.conf
+                  - /etc/cfn/hooks.d/cfn-auto-reloader.conf
+    DependsOn: SNMPSecret
+    Properties:
+      ImageId: !Ref 'LatestAmiId'
+      InstanceType: !Ref 'SNMPInstanceType'
+      KeyName: !Ref 'MyKeyPair'
+      IamInstanceProfile: !Ref 'SNMPInstanceProfile'
+      SubnetId: !Select
+        - 0
+        - !Ref 'MySubnet'
+      SecurityGroupIds:
+        - !GetAtt 'SNMPSG.GroupId'
+      Tags:
+        - Key: Name
+          Value: SNMP Agent 2
+      UserData: !Base64
+        Fn::Sub: |
+          #!/bin/bash -xe
+          yum update -y aws-cfn-bootstrap
+          /opt/aws/bin/cfn-init -v --stack ${AWS::StackName} --resource SNMPInstance2 --configsets InstallAndRun --region ${AWS::Region}
+          /opt/aws/bin/cfn-signal -e $? --stack ${AWS::StackName} --resource SNMPInstance2 --region ${AWS::Region}
+    CreationPolicy:
+      ResourceSignal:
+        Timeout: PT10M
+Outputs:
+  SNMPAgent1:
+    Description: Private IP address
+    Value: !GetAtt 'SNMPInstance1.PrivateIp'
+  SNMPAgent2:
+    Description: Private IP address
+    Value: !GetAtt 'SNMPInstance2.PrivateIp'

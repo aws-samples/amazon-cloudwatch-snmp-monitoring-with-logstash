@@ -1,0 +1,21 @@
+# This file is where you define your pipelines. You can define multiple.
+# For more information on multiple pipelines, see the documentation:
+#   https://www.elastic.co/guide/en/logstash/current/multiple-pipelines.html
+
+# pipeline to pipeline - distributor and collector pattern
+
+# first pipeline acting as entry point
+- pipeline.id: snmp
+  path.config: "/etc/logstash/conf.d/snmp.conf"
+
+# fan out pipelines, add per OID
+- pipeline.id: inbytes
+  path.config: "/etc/logstash/conf.d/inBytes.conf"
+- pipeline.id: outbytes
+  path.config: "/etc/logstash/conf.d/OutBytes.conf"
+- pipeline.id: systemuptime
+  path.config: "/etc/logstash/conf.d/systemUpTime.conf"
+
+# last pipeline, sending to Amazon CloudWatch metrics
+- pipeline.id: cloudwatch
+  path.config: "/etc/logstash/conf.d/cloudwatch.conf"
