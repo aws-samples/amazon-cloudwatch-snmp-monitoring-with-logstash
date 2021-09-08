@@ -70,7 +70,7 @@ Parameters:
   RepoLocation:
     Description: Archive containing configuration and settings
     Type: String
-    Default: https://github.com/ORGNAME/REPONAME/tarball/main
+    Default: https://github.com/aws-samples/amazon-cloudwatch-snmp-monitoring-with-logstash/tarball/main
   MyKeyPair:
     Description: Amazon EC2 Key Pair
     Type: AWS::EC2::KeyPair::KeyName
