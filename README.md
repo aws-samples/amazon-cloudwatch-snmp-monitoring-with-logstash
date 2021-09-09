@@ -1,6 +1,6 @@
 ## SNMP monitoring using Amazon CloudWatch and Elastic Logstash
 
-Read the blog about this application: 
+[Read the post](https://aws.amazon.com/blogs/mt/snmp-monitoring-using-amazon-cloudwatch-and-elastic-logstash/) on this application in AWS Management & Governance blog.
 
 ### Prerequisites for deploying the solution with AWS CloudFormation
 To deploy the example application, you need the following:
